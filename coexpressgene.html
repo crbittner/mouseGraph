@@ -1,0 +1,334 @@
+<html>
+<head>
+	<title>mouseGraph</title>
+	<script src="scripts/jquery-3.2.1.min.js"></script>
+	<script src="scripts/d3.v4.min.js"></script>
+	<link rel="stylesheet" type="text/css" href="style.css">
+	<style>
+		.node {
+			cursor: pointer;
+		}
+		.node:hover {
+			stroke: #000;
+			stroke-width: 1.5px;
+		}
+		.node--leaf {
+			fill: white;
+		}
+		.label {
+			font: 11px "Helvetica Neue", Helvetica, Arial, sans-serif;
+			text-anchor: middle;
+			text-shadow: 0 1px 0 #fff, 1px 0 0 #fff, -1px 0 0 #fff, 0 -1px 0 #fff;
+		}
+		.label,
+		.node--root,
+		.node--leaf {
+			pointer-events: none;
+		}
+	</style>
+</head>
+<body>
+	<script type="text/javascript">
+		function updateRangeInput(elem) {
+			$(elem).next().val($(elem).val());
+		}
+	</script>
+	<script type="text/javascript">
+		function post_cypherquery() {
+
+			document.getElementById("vis").innerHTML = "";
+			document.getElementById("err").innerHTML = "";
+
+			var thresh = document.getElementById("cypher-in-threshold").value;
+
+			$.ajax({
+				url: "http://localhost:7474/db/data/transaction/commit",
+				type: 'POST',
+
+			/*construct query here*/
+			data: JSON.stringify({ "statements": [{ "statement": ("MATCH (n1:structure)-[r]->(n2:gene) WHERE n1.name ='") + $('#cypher-in-struct').val() + ("' AND r.CLASS_WLZ_RCC_") + $('#cypher-in-connect').val() + (" = 1 AND r.QUANT_WLZ_RCC_") + $('#cypher-in-connect').val() + (" > ") + thresh + (" RETURN n1 AS structure, n2 as gene") }] }),
+			
+			contentType: 'application/json',
+			accept: 'application/json; charset=UTF-8'   
+
+			}).done(function (data) {
+				$('#resultsArea').text(JSON.stringify(data));
+				try {
+			var parent = data.results[0].data[0].row[0].name;
+
+			//Resturcture Neo4j JSON results to JSON format that D3 can use
+			// var composite = '{ "parent" : "' + parent + '", ' + '"children" : [ ';
+			var composite = '{ "parent" : "' + parent + '", ' + '"children" : [ ';
+
+			//first iterator through Neo4j results
+			$.each(data.results[0].data, function (x, y) {
+				//x is the index of the array
+				//console.log(x);
+				//console.log(y);
+				var i = 0;
+				if (x > 0) {
+					composite += ',';
+					
+				};
+
+				//second iterator through Neo4j results
+				$.each(y.row, function (x2, y2) {
+					//console.log("x2=" + x2);
+					if (y2.name != parent) {
+						composite += ('{');
+						//third iterator
+						$.each(y2, function (x3, y3) {
+							//console.log('x3='+x3.findIndex);
+							if (i>0) {
+								
+								composite += ',';
+								//console.log(',');
+							};i+=1;
+							
+							composite += ' "' + x3 + '" : "' + y3 + '"';
+							
+						});//end third iterator
+						composite += ' } ';
+					};
+				});//end second iterator
+			});//end first iterator
+			composite += '] }';
+			console.log(composite);
+
+			//
+			//D3js viualisation
+			//
+			var svg = d3.select("#vis"),
+			margin = 20,
+			diameter = +svg.attr("width"),
+			g = svg.append("g").attr("transform", "translate(" + diameter / 2 + "," + diameter / 2 + ")");
+
+			var color = d3.scaleLinear()
+			.domain([-1, 5])
+			.range(["#2d6382", "#7ccfff"])//sets colors for background and space between nodes, ranges depending on how many levels
+			.interpolate(d3.interpolateHcl);
+
+			var pack = d3.pack()
+			.size([diameter - margin, diameter - margin])
+			.padding(2);
+
+				// put JSON object here  json = JSON.parse(object);			
+				json = JSON.parse(composite);
+
+				root = d3.hierarchy(json)
+				.sum(function(d) { return d.volume; })//gets value from json object for node size
+				.sort(function(a, b) { return b.value - a.value; });//sorting order
+
+				var focus = root,
+				nodes = pack(root).descendants(),
+				view;
+
+				var circle = g.selectAll("circle")
+				.data(nodes)
+				.enter().append("circle")
+				.attr("class", function(d) { return d.parent ? d.children ? "node" : "node node--leaf" : "node node--root"; })
+				.style("fill", function(d) { return d.children ? color(d.depth) : null; })
+				.on("click", function(d) { if (focus !== d) zoom(d), d3.event.stopPropagation(); });
+
+				var text = g.selectAll("text")
+				.data(nodes)
+				.enter().append("text")
+				.attr("class", "label")
+				.style("fill-opacity", function(d) { return d.parent === root ? 1 : 0; })
+				.style("display", function(d) { return d.parent === root ? "inline" : "none"; })
+				.text(function(d) { return d.data.name; });
+
+				var node = g.selectAll("circle,text");
+
+				svg
+				.style("background", color(-1))
+				.on("click", function() { zoom(root); });
+
+				zoomTo([root.x, root.y, root.r * 2 + margin]);
+
+				function zoom(d) {
+					var focus0 = focus; focus = d;
+
+					var transition = d3.transition()
+					.duration(d3.event.altKey ? 7500 : 750)
+					.tween("zoom", function(d) {
+						var i = d3.interpolateZoom(view, [focus.x, focus.y, focus.r * 2 + margin]);
+						return function(t) { zoomTo(i(t)); };
+					});
+					transition.selectAll("text")
+					.filter(function(d) { return d.parent === focus || this.style.display === "inline"; })
+					.style("fill-opacity", function(d) { return d.parent === focus ? 1 : 0; })
+					.on("start", function(d) { if (d.parent === focus) this.style.display = "inline"; })
+					.on("end", function(d) { if (d.parent !== focus) this.style.display = "none"; });
+				}
+
+				function zoomTo(v) {
+					var k = diameter / v[2]; view = v;
+					node.attr("transform", function(d) { return "translate(" + (d.x - v[0]) * k + "," + (d.y - v[1]) * k + ")"; });
+					circle.attr("r", function(d) { return d.r * k; });
+				}
+			//
+			//end D3js visualization
+			//
+			}
+			catch(err) {
+				document.getElementById("err").innerHTML = "No Data Returned";
+			};
+			})
+			
+		};
+	</script>
+	<!-- Start of Page Layout -->
+	<h1 align="center">mouseGraph</h1>
+	<svg version="1.1" viewBox="0 0 53.830002 49.216" width="150" style='fill: #fff; padding-bottom: 20px; opacity: .7'>
+	<!-- mousegraph logo -->
+		<g  transform="translate(0,-247.784)" id="logo">
+			<path d="m 9.4633019,247.78706 a 9.6920861,9.6920861 0 0 0 -4.617289,1.29605 9.6920861,9.6920861 0 0 0 -3.547588,13.2395 9.6920861,9.6920861 0 0 0 12.6503901,3.84989 l 7.559234,13.09275 a 9.6920861,9.6920861 0 0 0 -3.20601,3.59823 9.6920861,9.6920861 0 0 0 -0.38809,0.85524 l -9.8397091,-3.58118 -0.201023,0.55242 9.8490121,3.5848 a 9.6920861,9.6920861 0 0 0 -0.470771,2.2934 9.6920861,9.6920861 0 0 0 -0.01189,0.44597 H 6.7580409 v 0.58807 H 17.23027 a 9.6920861,9.6920861 0 0 0 0.483179,2.74195 l -9.8402321,3.5817 0.201023,0.55242 9.8495291,-3.58479 a 9.6920861,9.6920861 0 0 0 0.5979,1.2609 9.6920861,9.6920861 0 0 0 13.2395,3.54707 9.6920861,9.6920861 0 0 0 4.15581,-4.80436 l 9.8392,3.58118 0.20102,-0.55242 -9.84901,-3.58479 a 9.6920861,9.6920861 0 0 0 0.48266,-2.73886 h 10.48153 v -0.58807 h -10.47275 a 9.6920861,9.6920861 0 0 0 -0.0661,-0.90072 9.6920861,9.6920861 0 0 0 -0.41652,-1.84175 l 9.84023,-3.5817 -0.20102,-0.55242 -9.84953,3.5848 a 9.6920861,9.6920861 0 0 0 -0.5979,-1.26039 9.6920861,9.6920861 0 0 0 -2.98948,-3.19154 l 7.55716,-13.08964 a 9.6920861,9.6920861 0 0 0 12.65504,-3.85816 9.6920861,9.6920861 0 0 0 -3.54758,-13.2395 9.6920861,9.6920861 0 0 0 -13.2395,3.54759 9.6920861,9.6920861 0 0 0 -1.18546,3.37085 9.6920861,9.6920861 0 0 0 -0.0837,0.81339 h -15.12569 a 9.6920861,9.6920861 0 0 0 -1.264,-4.18424 9.6920861,9.6920861 0 0 0 -8.6222171,-4.84364 z m 0.5689571,1.69189 a 7.9999998,7.9999998 0 0 1 7.116879,3.99769 7.9999998,7.9999998 0 0 1 -2.927987,10.92801 7.9999998,7.9999998 0 0 1 -10.9280141,-2.92798 7.9999998,7.9999998 0 0 1 2.927985,-10.92802 7.9999998,7.9999998 0 0 1 3.8111371,-1.0697 z m 33.19901,0.007 a 7.9999998,7.9999998 0 0 1 4.37751,1.06298 7.9999998,7.9999998 0 0 1 2.9285,10.92802 7.9999998,7.9999998 0 0 1 -10.92853,2.92798 7.9999998,7.9999998 0 0 1 -2.92799,-10.92801 7.9999998,7.9999998 0 0 1 6.55051,-3.99097 z m -23.87348,8.65218 h 15.11897 a 9.6920861,9.6920861 0 0 0 4.25866,7.3732 l -7.56285,13.09946 a 9.6920861,9.6920861 0 0 0 -0.69505,-0.31575 9.6920861,9.6920861 0 0 0 -7.81916,0.31781 l -7.559226,-13.09354 a 9.6920861,9.6920861 0 0 0 4.258656,-7.38146 z m 7.36854,20.64319 a 7.9999998,7.9999998 0 0 1 7.11688,3.99769 7.9999998,7.9999998 0 0 1 -2.92799,10.92853 7.9999998,7.9999998 0 0 1 -10.92853,-2.92851 7.9999998,7.9999998 0 0 1 2.92851,-10.92801 7.9999998,7.9999998 0 0 1 3.81113,-1.0697 z" />
+		</g>
+	</svg>
+	<div id='querybox' class='querybox' align="center">
+		<table>
+			<tr>
+				<td>Gene Region 1
+					<select name="cypher" id="cypher-in-gene1">
+						<!-- <option value="~ .*.*">Any</option> -->
+
+						<option value="Ctnnb1">Ctnnb1</option>
+						<option value="Fgf8_1009">Fgf8_1009</option>
+						<option value="Fgf8_1028">Fgf8_1028</option>
+						<option value="Fzd1">Fzd1</option>
+						<option value="Fzd10">Fzd10</option>
+						<option value="Fzd3">Fzd3</option>
+						<option value="Fzd4">Fzd4</option>
+						<option value="Fzd5">Fzd5</option>
+						<option value="Fzd6">Fzd6</option>
+						<option value="Fzd7">Fzd7</option>
+						<option value="Fzd8">Fzd8</option>
+						<option value="Fzd9">Fzd9</option>
+						<option value="Lef1">Lef1</option>
+						<option value="PCNA_B">PCNA_B</option>
+						<option value="PCNA_C">PCNA_C</option>
+						<option value="Sfrp1">Sfrp1</option>
+						<option value="Sfrp2">Sfrp2</option>
+						<option value="Sfrp3">Sfrp3</option>
+						<option value="Sfrp4">Sfrp4</option>
+						<option value="Shh">Shh</option>
+						<option value="Tcf7">Tcf7</option>
+						<option value="Tcf7l1">Tcf7l1</option>
+						<option value="Tcf7l2">Tcf7l2</option>
+						<option value="Wif1">Wif1</option>
+						<option value="Wise">Wise</option>
+						<option value="Wnt1">Wnt1</option>
+						<option value="Wnt10A">Wnt10A</option>
+						<option value="Wnt10B">Wnt10B</option>
+						<option value="Wnt11">Wnt11</option>
+						<option value="Wnt16">Wnt16</option>
+						<option value="Wnt2">Wnt2</option>
+						<option value="Wnt2B">Wnt2B</option>
+						<option value="Wnt3">Wnt3</option>
+						<option value="Wnt3A">Wnt3A</option>
+						<option value="Wnt4">Wnt4</option>
+						<option value="Wnt5A">Wnt5A</option>
+						<option value="Wnt5B">Wnt5B</option>
+						<option value="Wnt6">Wnt6</option>
+						<option value="Wnt7A">Wnt7A</option>
+						<option value="Wnt7B">Wnt7B</option>
+						<option value="Wnt8A">Wnt8A</option>
+						<option value="Wnt8B">Wnt8B</option>
+						<option value="Wnt9A">Wnt9A</option>
+						<option value="Wnt9B">Wnt9B</option>
+					</select>
+				</td>
+			</tr>
+			<tr>
+				<td>Gene Region 2
+					<select name="cypher" id="cypher-in-gene2">
+						<option value="Ctnnb1">Ctnnb1</option>
+						<option value="Fgf8_1009">Fgf8_1009</option>
+						<option value="Fgf8_1028">Fgf8_1028</option>
+						<option value="Fzd1">Fzd1</option>
+						<option value="Fzd10">Fzd10</option>
+						<option value="Fzd3">Fzd3</option>
+						<option value="Fzd4">Fzd4</option>
+						<option value="Fzd5">Fzd5</option>
+						<option value="Fzd6">Fzd6</option>
+						<option value="Fzd7">Fzd7</option>
+						<option value="Fzd8">Fzd8</option>
+						<option value="Fzd9">Fzd9</option>
+						<option value="Lef1">Lef1</option>
+						<option value="PCNA_B">PCNA_B</option>
+						<option value="PCNA_C">PCNA_C</option>
+						<option value="Sfrp1">Sfrp1</option>
+						<option value="Sfrp2">Sfrp2</option>
+						<option value="Sfrp3">Sfrp3</option>
+						<option value="Sfrp4">Sfrp4</option>
+						<option value="Shh">Shh</option>
+						<option value="Tcf7">Tcf7</option>
+						<option value="Tcf7l1">Tcf7l1</option>
+						<option value="Tcf7l2">Tcf7l2</option>
+						<option value="Wif1">Wif1</option>
+						<option value="Wise">Wise</option>
+						<option value="Wnt1">Wnt1</option>
+						<option value="Wnt10A">Wnt10A</option>
+						<option value="Wnt10B">Wnt10B</option>
+						<option value="Wnt11">Wnt11</option>
+						<option value="Wnt16">Wnt16</option>
+						<option value="Wnt2">Wnt2</option>
+						<option value="Wnt2B">Wnt2B</option>
+						<option value="Wnt3">Wnt3</option>
+						<option value="Wnt3A">Wnt3A</option>
+						<option value="Wnt4">Wnt4</option>
+						<option value="Wnt5A">Wnt5A</option>
+						<option value="Wnt5B">Wnt5B</option>
+						<option value="Wnt6">Wnt6</option>
+						<option value="Wnt7A">Wnt7A</option>
+						<option value="Wnt7B">Wnt7B</option>
+						<option value="Wnt8A">Wnt8A</option>
+						<option value="Wnt8B">Wnt8B</option>
+						<option value="Wnt9A">Wnt9A</option>
+						<option value="Wnt9B">Wnt9B</option>
+					</select>
+				</td>
+			</tr>
+			<tr>
+				<td>Connection Type : 
+					<select name="cypher" id="cypher-in-connect">
+						<option value="PO">Partially Overlapping</option> 
+						<option value="DC">Disconnected</option>
+						<option value="EC">Externally Connected</option>
+						<!-- <option value="EMPTY">Empty</option> -->
+						<option value="ENC">Encloses</option>
+						<option value="ENCI">Encloses Inverse</option>
+						<option value="EQ">Equal To</option>
+						<option value="NTPP">Non-tangential Proper Part</option>
+						<option value="NTPPI">Non-tangential Proper Part Inverse</option>
+						<option value="NTSUR">Non-Tangential Surround</option>
+						<!-- <option value="OST">OST</option>-->
+						<option value="TPP">Tangential Proper Part</option>
+						<option value="TPPI">Tangential Proper Part Inverse</option>
+						<option value="TSUR">Tangential Surround</option>
+						<option value="TSURI">Tangential Surround Inverse</option>
+					</select>
+				</td>
+			</tr>
+			<tr>
+				<td>Threshold : 
+					<input type="range" id="cypher-in-threshold" pattern="[0-1]+([\.,][0-1]+[0-1]+)?" step="0.01" name="cypher-in-threshold" min="0" max="1" value=0.1 oninput="updateRangeInput(this)">
+					<input type="text" id="cypher-in-threshold" value=".01" style='width: 30px;' readonly="readonly">
+				</td>
+			</tr>
+			<tr>
+				<td style='text-align: center;'>
+					<button class= "buttonsel" name="post cypher" onclick="post_cypherquery();">execute</button>
+				</td>
+			</tr>
+		</table>
+	</div>
+	<div>
+		<h1 id="err"></h1>
+		<svg id="vis" width="500" height="500" style="border-radius: 50px;"></svg>
+		
+	</div>
+
+</body>
+</html>
